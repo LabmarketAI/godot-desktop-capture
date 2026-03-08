@@ -33,6 +33,19 @@ A Godot 4 GDExtension that streams a live capture of an OS desktop monitor into 
 
 **Prerequisites**: Python 3, SCons, Git, MinGW-w64 or MSVC (Windows), GCC/Clang + `libpipewire-0.3-dev` + `libdbus-1-dev` (Linux).
 
+SCons is a Python package. Install it system-wide or into a virtual environment:
+
+```bash
+# Option 1 — system-wide (simplest)
+pip install scons
+
+# Option 2 — virtual environment (keeps your global Python clean)
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install scons
+# SCons is now on PATH for the duration of the activated shell.
+```
+
 ```bash
 git clone --recurse-submodules https://github.com/LabmarketAI/godot-desktop-capture.git
 cd godot-desktop-capture
@@ -40,8 +53,14 @@ cd godot-desktop-capture
 # Windows release build
 scons target=template_release platform=windows arch=x86_64
 
+# Windows debug build (used by the Godot editor)
+scons target=template_debug platform=windows arch=x86_64
+
 # Linux release build
 scons target=template_release platform=linux arch=x86_64
+
+# Linux debug build
+scons target=template_debug platform=linux arch=x86_64
 ```
 
 The compiled binary is written to `project/addons/godot-desktop-capture/bin/`. Copy the `project/addons/` folder into your project as described in Option A.
@@ -49,6 +68,23 @@ The compiled binary is written to `project/addons/godot-desktop-capture/bin/`. C
 > **Windows note**: DXGI Desktop Duplication is a Windows 8+ API. No additional SDKs required — `dxgi.lib` and `d3d11.lib` ship with MinGW-w64 and MSVC.
 >
 > **Linux note**: `libpipewire` and `libdbus` are `dlopen`-ed at runtime — they are not linked at build time and are not bundled in the release zip. Any modern Wayland or X11 desktop with PipeWire (Ubuntu 22.04+, Fedora 34+, etc.) already has them.
+
+### Local development with the godot-charts demo
+
+If you are working on this repo and want to test changes in the [godot-charts](https://github.com/LabmarketAI/godot-charts) demo, build a debug binary and copy it straight into the demo's addon folder:
+
+```bash
+# From the godot-desktop-capture repo root:
+
+# 1. Build the debug DLL (the Godot editor loads the debug variant).
+scons target=template_debug platform=windows arch=x86_64
+
+# 2. Copy the output into the demo project.
+cp project/addons/godot-desktop-capture/bin/libgodot-desktop-capture.windows.debug.x86_64.dll \
+   ../godot-charts/demo/addons/godot-desktop-capture/bin/
+```
+
+On Linux replace `.dll` with `.so` and `windows` with `linux`. After copying, reload the godot-charts project in the Godot editor (`Project → Reload Current Project`) — the updated extension loads immediately.
 
 ---
 
