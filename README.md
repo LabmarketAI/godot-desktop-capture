@@ -149,4 +149,9 @@ capture.capture_stopped.connect(func(reason: String) -> void:
 
 - Godot 4.1 or later
 - Windows 8 or later (for the DXGI backend)
-- The process must be running in a session that has access to the desktop (captures will fail or be black inside a locked screen or headless session)
+- The process must be running in an interactive desktop session. DXGI Desktop Duplication is a per-session API — it only works when the calling process has access to the visible desktop of the logged-in user. Common situations where capture will silently return black frames or fail with `permission_denied` / `device_lost`:
+  - **Locked screen** (`Win+L` or unattended timeout) — the secure desktop is a separate session; `DuplicateOutput` returns `E_ACCESSDENIED`. The backend will attempt to recover automatically when the screen is unlocked (up to ~1 second of retries).
+  - **Remote Desktop (RDP)** — the local console session is disconnected when an RDP session takes over. The RDP session itself has its own virtual desktop and *can* run DXGI capture, but only from within that session.
+  - **Headless / no-display servers** — machines without a physical or virtual display adapter attached will have no outputs to enumerate; `get_monitor_count()` returns 0.
+  - **Windows services and scheduled tasks** — these run in Session 0, which is isolated from all interactive user sessions. DXGI Desktop Duplication is not available in Session 0.
+  - **UAC elevation prompt** — while the secure desktop is shown for a UAC dialog, capture of the interactive desktop is suspended. Frames will resume automatically once the prompt is dismissed.
