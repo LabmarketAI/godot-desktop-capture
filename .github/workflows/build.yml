@@ -100,6 +100,8 @@ jobs:
     runs-on: ubuntu-22.04
     needs: build
     if: github.event_name == 'release'
+    permissions:
+      contents: write
     steps:
       - name: Merge build artifacts
         uses: actions/download-artifact@v4
@@ -122,11 +124,9 @@ jobs:
           zip -r "../godot-desktop-capture-${{ github.event.release.tag_name }}.zip" addons/
 
       - name: Upload release zip
-        uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: godot-desktop-capture-${{ github.event.release.tag_name }}.zip
-          asset_name: godot-desktop-capture-${{ github.event.release.tag_name }}.zip
-          asset_content_type: application/zip
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "godot-desktop-capture-${{ github.event.release.tag_name }}.zip" \
+            --repo "${{ github.repository }}"
