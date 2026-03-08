@@ -18,8 +18,6 @@ struct pw_core;
 struct pw_stream;
 struct pw_stream_events;
 struct spa_hook;
-struct _DBusConnection;
-typedef struct _DBusConnection DBusConnection;
 
 // Callback invoked from the PipeWire data thread each time a new frame is ready.
 //   data          — row-major RGBA8 pixels (B↔R already swapped from PipeWire BGRA)
@@ -83,7 +81,9 @@ private:
 	static void _on_process(void *data);
 
 	// ---- D-Bus (portal session lifetime) ----
-	DBusConnection *_dbus_conn = nullptr;
+	// Stored as void* to avoid pulling dbus headers into consumers of this header.
+	// Cast to DBusConnection* inside backend_linux.cpp.
+	void *_dbus_conn = nullptr;
 
 	// ---- PipeWire objects ----
 	struct pw_main_loop *_pw_loop = nullptr;

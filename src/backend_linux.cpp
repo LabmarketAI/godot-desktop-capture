@@ -578,7 +578,7 @@ bool PipeWireCaptureBackend::_portal_setup(int monitor_index,
 	}
 
 	// Keep the connection alive — the portal session is tied to it.
-	_dbus_conn = conn;
+	_dbus_conn = static_cast<void *>(conn);
 	return true;
 }
 
@@ -735,12 +735,14 @@ bool PipeWireCaptureBackend::_pw_setup(uint32_t node_id,
 	}
 
 	// Set up events struct (heap-allocated so it outlives _pw_setup's stack).
-	_pw_events = new struct pw_stream_events{};
+	_pw_events = new pw_stream_events();
+	memset(_pw_events, 0, sizeof(*_pw_events));
 	_pw_events->version = PW_VERSION_STREAM_EVENTS;
 	_pw_events->param_changed = &PipeWireCaptureBackend::_on_param_changed;
 	_pw_events->process = &PipeWireCaptureBackend::_on_process;
 
-	_pw_listener = new struct spa_hook{};
+	_pw_listener = new spa_hook();
+	memset(_pw_listener, 0, sizeof(*_pw_listener));
 	pw_stream_add_listener(_pw_stream, _pw_listener, _pw_events, this); // inline
 
 	// Build stream format params (SPA inline functions — no dlopen needed).
@@ -850,7 +852,7 @@ bool PipeWireCaptureBackend::start(int monitor_index, bool capture_cursor,
 	// PipeWire object setup.
 	if (!_pw_setup(node_id, error_out)) {
 		if (_dbus_conn) {
-			g_dbus.dbus_connection_unref(_dbus_conn);
+			g_dbus.dbus_connection_unref(static_cast<DBusConnection *>(_dbus_conn));
 			_dbus_conn = nullptr;
 		}
 		release_pw();
@@ -880,7 +882,7 @@ void PipeWireCaptureBackend::stop() {
 
 	// Close D-Bus connection — terminates the portal session.
 	if (_dbus_conn) {
-		g_dbus.dbus_connection_unref(_dbus_conn);
+		g_dbus.dbus_connection_unref(static_cast<DBusConnection *>(_dbus_conn));
 		_dbus_conn = nullptr;
 	}
 
