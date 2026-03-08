@@ -1,0 +1,132 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - identifier: linux-debug-x86_64
+            name: Linux Debug x86_64
+            target: template_debug
+            platform: linux
+            arch: x86_64
+
+          - identifier: linux-release-x86_64
+            name: Linux Release x86_64
+            target: template_release
+            platform: linux
+            arch: x86_64
+
+          - identifier: windows-debug-x86_64
+            name: Windows Debug x86_64
+            target: template_debug
+            platform: windows
+            arch: x86_64
+
+          - identifier: windows-release-x86_64
+            name: Windows Release x86_64
+            target: template_release
+            platform: windows
+            arch: x86_64
+
+    steps:
+      - name: Install Windows cross-compiler (mingw-w64)
+        if: ${{ startsWith(matrix.identifier, 'windows-') }}
+        run: |
+          sudo apt-get install -y mingw-w64
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+
+      - name: Install Linux build dependencies
+        if: ${{ startsWith(matrix.identifier, 'linux-') }}
+        run: |
+          sudo apt-get install -y libpipewire-0.3-dev libdbus-1-dev
+
+      - name: Install Python and SCons
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: pip install scons
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up SCons cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.scons-cache/
+            ${{ github.workspace }}/**/.sconsign.dblite
+            ${{ github.workspace }}/godot-cpp/gen/
+          key: ${{ matrix.identifier }}-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ${{ matrix.identifier }}-${{ github.ref }}-
+            ${{ matrix.identifier }}-
+
+      - name: Build
+        env:
+          SCONS_CACHE: ${{ github.workspace }}/.scons-cache/
+          SCONS_CACHE_LIMIT: 4096
+        run: |
+          scons target=${{ matrix.target }} platform=${{ matrix.platform }} arch=${{ matrix.arch }} -j2
+          ls -l project/addons/godot-desktop-capture/bin/
+
+      - name: Prepare addon for packaging
+        run: |
+          cp README.md LICENSE project/addons/godot-desktop-capture/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.identifier }}
+          path: project/addons/
+
+  package:
+    name: Package release zip
+    runs-on: ubuntu-22.04
+    needs: build
+    if: github.event_name == 'release'
+    steps:
+      - name: Merge build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Assemble release zip
+        run: |
+          mkdir -p release/addons/godot-desktop-capture/bin
+          # Copy all platform binaries into a single addon folder
+          for dir in artifacts/*/godot-desktop-capture/bin/; do
+            cp -n "$dir"* release/addons/godot-desktop-capture/bin/ 2>/dev/null || true
+          done
+          # Copy shared files from any artifact
+          first=$(ls artifacts/ | head -1)
+          cp "artifacts/$first/godot-desktop-capture/godot-desktop-capture.gdextension" release/addons/godot-desktop-capture/
+          cp "artifacts/$first/godot-desktop-capture/README.md" release/addons/godot-desktop-capture/ 2>/dev/null || true
+          cp "artifacts/$first/godot-desktop-capture/LICENSE" release/addons/godot-desktop-capture/ 2>/dev/null || true
+          cd release
+          zip -r "../godot-desktop-capture-${{ github.event.release.tag_name }}.zip" addons/
+
+      - name: Upload release zip
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: godot-desktop-capture-${{ github.event.release.tag_name }}.zip
+          asset_name: godot-desktop-capture-${{ github.event.release.tag_name }}.zip
+          asset_content_type: application/zip

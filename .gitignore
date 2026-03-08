@@ -39,3 +39,27 @@
 
 # debug information files
 *.dwo
+
+# SCons
+.scons-cache/
+.sconf_temp/
+.sconsign.dblite
+*.pyc
+*.os
+
+# Compiled binaries — built by CI or locally, never committed.
+project/addons/godot-desktop-capture/bin/*.so
+project/addons/godot-desktop-capture/bin/*.dll
+project/addons/godot-desktop-capture/bin/*.dylib
+
+# Godot editor artefacts
+project/.godot/
+project/export_presets.cfg
+*.import
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
