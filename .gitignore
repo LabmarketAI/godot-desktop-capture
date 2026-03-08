@@ -47,10 +47,13 @@
 *.pyc
 *.os
 
-# Compiled binaries — built by CI or locally, never committed.
+# Compiled binaries and MSVC linker side-outputs — built by CI or locally, never committed.
 project/addons/godot-desktop-capture/bin/*.so
 project/addons/godot-desktop-capture/bin/*.dll
 project/addons/godot-desktop-capture/bin/*.dylib
+project/addons/godot-desktop-capture/bin/*.exp
+project/addons/godot-desktop-capture/bin/*.lib
+project/addons/godot-desktop-capture/bin/*.pdb
 
 # Godot editor artefacts
 project/.godot/
@@ -63,3 +66,6 @@ project/export_presets.cfg
 # Editors
 .vscode/
 .idea/
+
+# Python virtual environment
+.venv/

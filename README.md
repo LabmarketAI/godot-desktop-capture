@@ -71,10 +71,21 @@ The compiled binary is written to `project/addons/godot-desktop-capture/bin/`. C
 
 ### Local development with the godot-charts demo
 
-If you are working on this repo and want to test changes in the [godot-charts](https://github.com/LabmarketAI/godot-charts) demo, build a debug binary and copy it straight into the demo's addon folder:
+#### Windows — automated script
+
+`build_local.ps1` checks for every dependency, prompts to install anything missing, sets up the MSVC environment automatically (no Developer Command Prompt needed), builds the debug DLL, and copies it into the sibling `godot-charts` demo:
+
+```powershell
+cd godot-desktop-capture
+.\build_local.ps1
+```
+
+Dependencies checked: Git, Python 3, SCons, MSVC (VS Build Tools). Missing items are offered for install via `winget`.
+
+#### Manual steps
 
 ```bash
-# From the godot-desktop-capture repo root:
+# From the godot-desktop-capture repo root (x64 Native Tools Command Prompt or equivalent):
 
 # 1. Build the debug DLL (the Godot editor loads the debug variant).
 scons target=template_debug platform=windows arch=x86_64

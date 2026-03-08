@@ -5,6 +5,16 @@ from pathlib import Path
 
 env = SConscript("godot-cpp/SConstruct")
 
+# SCons' MSVC auto-detection can replace the LIB/INCLUDE paths that
+# vcvarsall.bat already set up correctly, causing the linker to fail
+# to find CRT libraries such as libcmt.lib.  Restore the vcvarsall
+# paths so they take priority over whatever SCons detected.
+if env["platform"] == "windows":
+    for evar in ("LIB", "INCLUDE"):
+        val = os.environ.get(evar, "")
+        if val:
+            env.PrependENVPath(evar, val)
+
 # Add source files.
 env.Append(CPPPATH=["src/"])
 sources = Glob("src/*.cpp")

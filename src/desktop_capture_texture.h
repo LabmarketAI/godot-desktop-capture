@@ -53,8 +53,10 @@ private:
 
 	// Current frame dimensions — updated by the backend when capture starts
 	// or the monitor resolution changes.
-	int32_t _width = 1920;
-	int32_t _height = 1080;
+	// Initialised to 1×1 to match the placeholder texture created in the
+	// constructor; _push_frame() recreates the RID on the first real frame.
+	int32_t _width = 1;
+	int32_t _height = 1;
 
 	// User-facing properties.
 	bool _enabled = false; // false until explicitly started; avoids auto-capture on load
