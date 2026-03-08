@@ -9,9 +9,10 @@ env = SConscript("godot-cpp/SConstruct")
 env.Append(CPPPATH=["src/"])
 sources = Glob("src/*.cpp")
 
-# Windows-specific: link against DXGI / D3D11 (stubs for now; full impl in #4)
+# Windows-specific: link against DXGI / D3D11; require Windows 8+ for IDXGIOutputDuplication.
 if env["platform"] == "windows":
     env.Append(LIBS=["dxgi", "d3d11"])
+    env.Append(CPPDEFINES=["_WIN32_WINNT=0x0602"])
 
 # Linux-specific: headers for PipeWire and D-Bus (runtime dlopen; no link-time dep)
 # Build deps only: sudo apt-get install libpipewire-0.3-dev libdbus-1-dev

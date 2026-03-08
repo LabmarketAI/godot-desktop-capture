@@ -1,6 +1,15 @@
 #include "desktop_capture_texture.h"
 
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/core/method_bind.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
+
+#include <cstring>
+
+#ifdef _WIN32
+#include "backend_windows.h"
+#endif
 
 using namespace godot;
 
@@ -54,7 +63,13 @@ DesktopCaptureTexture::DesktopCaptureTexture() {
 }
 
 DesktopCaptureTexture::~DesktopCaptureTexture() {
-	// TODO (#4 / #5): stop the backend capture thread before freeing.
+#ifdef _WIN32
+	if (_backend) {
+		_backend->stop();
+		delete _backend;
+		_backend = nullptr;
+	}
+#endif
 	if (_texture_rid.is_valid()) {
 		RenderingServer::get_singleton()->free_rid(_texture_rid);
 	}
@@ -84,11 +99,55 @@ void DesktopCaptureTexture::set_enabled(bool p_enabled) {
 	if (_enabled == p_enabled) {
 		return;
 	}
-	_enabled = p_enabled;
-	// TODO (#4 / #5): start or stop the platform backend here.
-	// On failure the backend must call:
-	//   _enabled = false;
-	//   emit_signal("capture_stopped", reason_string);
+
+	if (!p_enabled) {
+		// Stop the active backend.
+#ifdef _WIN32
+		if (_backend) {
+			_backend->stop();
+			delete _backend;
+			_backend = nullptr;
+		}
+#endif
+		_enabled = false;
+		emit_signal("capture_stopped", String("disabled"));
+		return;
+	}
+
+	// Attempt to start the platform backend.
+#ifdef _WIN32
+	{
+		DXGICaptureBackend *backend = new DXGICaptureBackend();
+		std::string error;
+
+		// The callback runs on the DXGICaptureBackend thread.  It wraps the raw
+		// pixel buffer in an Image and dispatches _push_frame() to the render thread.
+		auto callback = [this](const uint8_t *data, int32_t w, int32_t h) {
+			PackedByteArray bytes;
+			bytes.resize(w * h * 4);
+			memcpy(bytes.ptrw(), data, static_cast<size_t>(w * h * 4));
+			Ref<Image> image = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, bytes);
+			// Dispatch to render thread so texture_2d_update and emit_changed are safe.
+			RenderingServer::get_singleton()->call_on_render_thread(
+					callable_mp(this, &DesktopCaptureTexture::_push_frame)
+							.bind(image, w, h));
+		};
+
+		if (!backend->start(_monitor_index, _capture_cursor, _max_fps, callback, error)) {
+			delete backend;
+			_enabled = false;
+			emit_signal("capture_stopped", String(error.c_str()));
+			return;
+		}
+		_backend = backend;
+		_enabled = true;
+		emit_signal("capture_started");
+	}
+#else
+	// No backend available on this platform.
+	_enabled = false;
+	emit_signal("capture_stopped", String("unsupported_platform"));
+#endif
 }
 
 bool DesktopCaptureTexture::get_enabled() const {
@@ -97,7 +156,11 @@ bool DesktopCaptureTexture::get_enabled() const {
 
 void DesktopCaptureTexture::set_monitor_index(int p_index) {
 	_monitor_index = p_index;
-	// TODO (#4 / #5): if currently enabled, restart the backend on the new monitor.
+	if (_enabled) {
+		// Restart the backend on the new monitor.
+		set_enabled(false);
+		set_enabled(true);
+	}
 }
 
 int DesktopCaptureTexture::get_monitor_index() const {
@@ -123,13 +186,21 @@ int DesktopCaptureTexture::get_max_fps() const {
 // --- Methods ---
 
 int DesktopCaptureTexture::get_monitor_count() const {
-	// TODO (#4 / #5): query the platform backend for the real count.
-	return 1;
+#ifdef _WIN32
+	return DXGICaptureBackend::enumerate_monitor_count();
+#else
+	return 0;
+#endif
 }
 
 Vector2i DesktopCaptureTexture::get_monitor_size(int p_index) const {
-	// TODO (#4 / #5): query the platform backend for the real size.
-	return Vector2i(1920, 1080);
+#ifdef _WIN32
+	int32_t w = 0, h = 0;
+	if (DXGICaptureBackend::get_monitor_size(p_index, w, h)) {
+		return Vector2i(w, h);
+	}
+#endif
+	return Vector2i(0, 0);
 }
 
 // --- Internal: called by platform backends on the render thread ---

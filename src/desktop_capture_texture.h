@@ -7,6 +7,10 @@
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
+#ifdef _WIN32
+#include "backend_windows.h"
+#endif
+
 namespace godot {
 
 /// A Texture2D that streams a live capture of an OS desktop monitor.
@@ -53,6 +57,11 @@ private:
 	int _monitor_index = 0;
 	bool _capture_cursor = true;
 	int _max_fps = 60;
+
+	// Platform backend (owned; null when no backend is active or on unsupported platform).
+#ifdef _WIN32
+	DXGICaptureBackend *_backend = nullptr;
+#endif
 
 protected:
 	static void _bind_methods();
