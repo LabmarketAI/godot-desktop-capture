@@ -32,31 +32,46 @@ void DesktopCaptureTexture::_bind_methods() {
 
 	// --- Signals ---
 
-	/// Emitted after each new frame is written to the texture.
+	// Emitted after each new frame is written to the texture.
 	ADD_SIGNAL(MethodInfo("frame_updated"));
 
-	/// Emitted when the capture loop successfully initialises.
+	// Emitted when the capture loop successfully initialises.
 	ADD_SIGNAL(MethodInfo("capture_started"));
 
-	/// Emitted when the capture loop stops.  reason is a short snake_case
-	/// string: "disabled", "permission_denied", "device_lost",
-	/// "missing_dependency", etc.
+	// Emitted when the capture loop stops.
+	// reason is a short snake_case string: "disabled", "permission_denied",
+	// "device_lost", "missing_dependency", "monitor_index_out_of_range".
 	ADD_SIGNAL(MethodInfo("capture_stopped",
 			PropertyInfo(Variant::STRING, "reason")));
 }
 
-DesktopCaptureTexture::DesktopCaptureTexture() {}
-DesktopCaptureTexture::~DesktopCaptureTexture() {}
+DesktopCaptureTexture::DesktopCaptureTexture() {
+	// Create a 1×1 black placeholder so _get_rid() always returns a valid RID.
+	// Backends replace the texture contents via _push_frame(); the RID itself
+	// never changes, so materials assigned before capture starts keep working.
+	Ref<Image> placeholder = Image::create_empty(1, 1, false, Image::FORMAT_RGB8);
+	_texture_rid = RenderingServer::get_singleton()->texture_2d_create(placeholder);
+}
+
+DesktopCaptureTexture::~DesktopCaptureTexture() {
+	// TODO (#4 / #5): stop the backend capture thread before freeing.
+	if (_texture_rid.is_valid()) {
+		RenderingServer::get_singleton()->free_rid(_texture_rid);
+	}
+}
 
 // --- Texture2D virtual overrides ---
 
+RID DesktopCaptureTexture::_get_rid() const {
+	return _texture_rid;
+}
+
 int32_t DesktopCaptureTexture::_get_width() const {
-	// Stub: return a sensible default until a backend is wired in (#4, #5).
-	return 1920;
+	return _width;
 }
 
 int32_t DesktopCaptureTexture::_get_height() const {
-	return 1080;
+	return _height;
 }
 
 bool DesktopCaptureTexture::_has_alpha() const {
@@ -66,8 +81,14 @@ bool DesktopCaptureTexture::_has_alpha() const {
 // --- Property accessors ---
 
 void DesktopCaptureTexture::set_enabled(bool p_enabled) {
+	if (_enabled == p_enabled) {
+		return;
+	}
 	_enabled = p_enabled;
-	// TODO (#4 / #5): start or stop the platform capture loop here.
+	// TODO (#4 / #5): start or stop the platform backend here.
+	// On failure the backend must call:
+	//   _enabled = false;
+	//   emit_signal("capture_stopped", reason_string);
 }
 
 bool DesktopCaptureTexture::get_enabled() const {
@@ -76,6 +97,7 @@ bool DesktopCaptureTexture::get_enabled() const {
 
 void DesktopCaptureTexture::set_monitor_index(int p_index) {
 	_monitor_index = p_index;
+	// TODO (#4 / #5): if currently enabled, restart the backend on the new monitor.
 }
 
 int DesktopCaptureTexture::get_monitor_index() const {
@@ -91,7 +113,7 @@ bool DesktopCaptureTexture::get_capture_cursor() const {
 }
 
 void DesktopCaptureTexture::set_max_fps(int p_fps) {
-	_max_fps = p_fps > 0 ? p_fps : 1;
+	_max_fps = MAX(p_fps, 1);
 }
 
 int DesktopCaptureTexture::get_max_fps() const {
@@ -108,4 +130,28 @@ int DesktopCaptureTexture::get_monitor_count() const {
 Vector2i DesktopCaptureTexture::get_monitor_size(int p_index) const {
 	// TODO (#4 / #5): query the platform backend for the real size.
 	return Vector2i(1920, 1080);
+}
+
+// --- Internal: called by platform backends on the render thread ---
+
+void DesktopCaptureTexture::_push_frame(const Ref<Image> &p_image, int32_t p_width, int32_t p_height) {
+	// This method is called from RenderingServer::call_on_render_thread() by
+	// the platform backend.  It runs on the render thread — do not call from
+	// the capture thread directly.
+	ERR_FAIL_COND(!_texture_rid.is_valid());
+	ERR_FAIL_COND(p_image.is_null());
+
+	if (p_width != _width || p_height != _height) {
+		// Resolution changed (monitor reconfigured, first real frame, etc.).
+		// Recreate the RenderingServer texture at the new size.
+		RenderingServer::get_singleton()->free_rid(_texture_rid);
+		_texture_rid = RenderingServer::get_singleton()->texture_2d_create(p_image);
+		_width = p_width;
+		_height = p_height;
+	} else {
+		RenderingServer::get_singleton()->texture_2d_update(_texture_rid, p_image, 0);
+	}
+
+	emit_changed(); // invalidates materials that hold this texture
+	emit_signal("frame_updated");
 }
