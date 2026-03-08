@@ -10,6 +10,9 @@
 #ifdef _WIN32
 #include "backend_windows.h"
 #endif
+#ifdef __linux__
+#include "backend_linux.h"
+#endif
 
 using namespace godot;
 
@@ -63,7 +66,7 @@ DesktopCaptureTexture::DesktopCaptureTexture() {
 }
 
 DesktopCaptureTexture::~DesktopCaptureTexture() {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 	if (_backend) {
 		_backend->stop();
 		delete _backend;
@@ -102,7 +105,7 @@ void DesktopCaptureTexture::set_enabled(bool p_enabled) {
 
 	if (!p_enabled) {
 		// Stop the active backend.
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
 		if (_backend) {
 			_backend->stop();
 			delete _backend;
@@ -128,6 +131,31 @@ void DesktopCaptureTexture::set_enabled(bool p_enabled) {
 			memcpy(bytes.ptrw(), data, static_cast<size_t>(w * h * 4));
 			Ref<Image> image = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, bytes);
 			// Dispatch to render thread so texture_2d_update and emit_changed are safe.
+			RenderingServer::get_singleton()->call_on_render_thread(
+					callable_mp(this, &DesktopCaptureTexture::_push_frame)
+							.bind(image, w, h));
+		};
+
+		if (!backend->start(_monitor_index, _capture_cursor, _max_fps, callback, error)) {
+			delete backend;
+			_enabled = false;
+			emit_signal("capture_stopped", String(error.c_str()));
+			return;
+		}
+		_backend = backend;
+		_enabled = true;
+		emit_signal("capture_started");
+	}
+#elif defined(__linux__)
+	{
+		PipeWireCaptureBackend *backend = new PipeWireCaptureBackend();
+		std::string error;
+
+		auto callback = [this](const uint8_t *data, int32_t w, int32_t h) {
+			PackedByteArray bytes;
+			bytes.resize(w * h * 4);
+			memcpy(bytes.ptrw(), data, static_cast<size_t>(w * h * 4));
+			Ref<Image> image = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, bytes);
 			RenderingServer::get_singleton()->call_on_render_thread(
 					callable_mp(this, &DesktopCaptureTexture::_push_frame)
 							.bind(image, w, h));
@@ -188,6 +216,8 @@ int DesktopCaptureTexture::get_max_fps() const {
 int DesktopCaptureTexture::get_monitor_count() const {
 #ifdef _WIN32
 	return DXGICaptureBackend::enumerate_monitor_count();
+#elif defined(__linux__)
+	return PipeWireCaptureBackend::enumerate_monitor_count();
 #else
 	return 0;
 #endif
@@ -199,6 +229,10 @@ Vector2i DesktopCaptureTexture::get_monitor_size(int p_index) const {
 	if (DXGICaptureBackend::get_monitor_size(p_index, w, h)) {
 		return Vector2i(w, h);
 	}
+#elif defined(__linux__)
+	int32_t w = 0, h = 0;
+	PipeWireCaptureBackend::get_monitor_size(p_index, w, h);
+	return Vector2i(w, h);
 #endif
 	return Vector2i(0, 0);
 }

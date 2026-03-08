@@ -11,6 +11,10 @@
 #include "backend_windows.h"
 #endif
 
+#ifdef __linux__
+#include "backend_linux.h"
+#endif
+
 namespace godot {
 
 /// A Texture2D that streams a live capture of an OS desktop monitor.
@@ -61,6 +65,8 @@ private:
 	// Platform backend (owned; null when no backend is active or on unsupported platform).
 #ifdef _WIN32
 	DXGICaptureBackend *_backend = nullptr;
+#elif defined(__linux__)
+	PipeWireCaptureBackend *_backend = nullptr;
 #endif
 
 protected:
