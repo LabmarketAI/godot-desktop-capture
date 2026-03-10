@@ -7,13 +7,7 @@
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
-#ifdef _WIN32
-#include "backend_windows.h"
-#endif
-
-#ifdef __linux__
-#include "backend_linux.h"
-#endif
+#include "backend_base.h"
 
 namespace godot {
 
@@ -40,7 +34,8 @@ namespace godot {
 /// rather than polling enabled after assignment.
 ///
 /// ## Platform backends
-///   Windows — DXGI Desktop Duplication API          (issue #4)
+///   Windows — Windows.Graphics.Capture (primary, issue #13)
+///             falls back to DXGI Desktop Duplication (issue #4)
 ///   Linux   — xdg-desktop-portal + PipeWire DMA-BUF (issue #5)
 class DesktopCaptureTexture : public Texture2D {
 	GDCLASS(DesktopCaptureTexture, Texture2D)
@@ -65,10 +60,8 @@ private:
 	int _max_fps = 60;
 
 	// Platform backend (owned; null when no backend is active or on unsupported platform).
-#ifdef _WIN32
-	DXGICaptureBackend *_backend = nullptr;
-#elif defined(__linux__)
-	PipeWireCaptureBackend *_backend = nullptr;
+#if defined(_WIN32) || defined(__linux__)
+	CaptureBackend *_backend = nullptr;
 #endif
 
 protected:
@@ -126,15 +119,25 @@ public:
 	/// Returns 1 in the stub implementation.
 	int get_monitor_count() const;
 
-	/// Returns the pixel dimensions of the monitor at p_index.
-	/// Returns Vector2i(1920, 1080) in the stub implementation.
-	Vector2i get_monitor_size(int p_index) const;
+	/// Internal: called via call_deferred from set_enabled(true) to start the
+	/// platform backend after the scene loader has finished establishing all
+	/// resource references (avoids premature stop() from the destructor).
+	void _start_backend();
 
-	// --- Internal helpers called by platform backends (not GDScript-visible) ---
+	/// Internal: called via call_deferred from the capture thread to push a new
+	/// frame on the main thread. Uses call_deferred instead of
+	/// call_on_render_thread + callable_mp to avoid ObjectDB thread-safety
+	/// issues with GDExtension RefCounted objects invoked from the render thread.
+	void _push_frame_deferred(const Ref<Image> &p_image);
 
 	/// Called by a backend on the render thread to push a new frame.
 	/// Updates the RenderingServer texture in-place and emits frame_updated.
 	void _push_frame(const Ref<Image> &p_image, int32_t p_width, int32_t p_height);
+
+	/// Returns the pixel dimensions of the monitor at p_index.
+	/// Returns Vector2i(1920, 1080) in the stub implementation.
+	Vector2i get_monitor_size(int p_index) const;
+
 };
 
 } // namespace godot

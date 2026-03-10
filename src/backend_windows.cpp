@@ -4,7 +4,24 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+static std::string _hresult_str(HRESULT hr) {
+	char buf[16];
+	snprintf(buf, sizeof(buf), "0x%08lX", static_cast<unsigned long>(hr));
+	return buf;
+}
+
+void DXGICaptureBackend::_log(const std::string &msg) {
+	if (_log_callback) {
+		_log_callback(msg);
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Destructor
@@ -196,6 +213,7 @@ bool DXGICaptureBackend::_init(int monitor_index, std::string &error_out) {
 		} else {
 			error_out = "dxgi_duplicate_output_failed";
 		}
+		_log("DesktopCapture: DuplicateOutput failed hr=" + _hresult_str(hr) + " reason=" + error_out);
 		return false;
 	}
 
@@ -263,9 +281,9 @@ bool DXGICaptureBackend::_ensure_staging(int32_t w, int32_t h) {
 bool DXGICaptureBackend::_reinit_duplication() {
 	_release_duplication();
 
-	// Retry up to 5 times with 200 ms delays (total ~1 s) to handle transient
+	// Retry up to 10 times with 200 ms delays (total ~2 s) to handle transient
 	// desktop lock / session switch scenarios.
-	for (int attempt = 0; attempt < 5; ++attempt) {
+	for (int attempt = 0; attempt < 10; ++attempt) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
 		// Re-enumerate to locate the output (adapter index is stable).
@@ -301,9 +319,12 @@ bool DXGICaptureBackend::_reinit_duplication() {
 		HRESULT hr = output1->DuplicateOutput(_device, &_duplication);
 		output1->Release();
 		if (SUCCEEDED(hr)) {
+			_log("DesktopCapture: _reinit_duplication succeeded on attempt " + std::to_string(attempt + 1));
 			return true;
 		}
+		_log("DesktopCapture: _reinit_duplication attempt " + std::to_string(attempt + 1) + " failed hr=" + _hresult_str(hr));
 	}
+	_log("DesktopCapture: _reinit_duplication exhausted all retries");
 	return false;
 }
 
@@ -455,18 +476,27 @@ void DXGICaptureBackend::_capture_loop() {
 		}
 
 		if (hr == DXGI_ERROR_ACCESS_LOST) {
+			_log("DesktopCapture: AcquireNextFrame ACCESS_LOST (0x887A0026), attempting reinit");
 			if (desktop_resource) {
 				desktop_resource->Release();
 			}
 			if (!_reinit_duplication()) {
+				_log("DesktopCapture: reinit failed, stopping capture thread");
+				if (_error_callback) {
+					_error_callback("device_lost");
+				}
 				_running.store(false);
 			}
 			continue;
 		}
 
 		if (FAILED(hr)) {
+			_log("DesktopCapture: AcquireNextFrame non-recoverable failure hr=" + _hresult_str(hr) + ", stopping capture thread");
 			if (desktop_resource) {
 				desktop_resource->Release();
+			}
+			if (_error_callback) {
+				_error_callback("device_lost");
 			}
 			// Non-recoverable error.
 			_running.store(false);

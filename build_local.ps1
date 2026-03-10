@@ -239,14 +239,9 @@ if (-not $chartsRoot) {
     } else {
         foreach ($binDir in $binDirs) {
             $dest = $binDir.FullName
-            $ans = Read-Host "    Copy DLL to '$dest'? [Y/n]"
-            if ($ans -notmatch '^[Nn]') {
-                if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest | Out-Null }
-                Copy-Item $dll $dest -Force
-                Write-Ok "Copied to $dest"
-            } else {
-                Write-Host "    Skipped $dest" -ForegroundColor Yellow
-            }
+            if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest | Out-Null }
+            Copy-Item $dll $dest -Force
+            Write-Ok "Copied to $dest"
         }
         Write-Host "`nDone. In Godot: Project -> Reload Current Project to pick up the new DLL." -ForegroundColor Green
     }

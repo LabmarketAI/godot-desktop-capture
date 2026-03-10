@@ -18,6 +18,8 @@
 #include <thread>
 #include <vector>
 
+#include "backend_base.h"
+
 // Callback invoked from the capture thread each time a new frame is ready.
 //   data          — row-major RGBA8 pixels (B↔R already swapped from DXGI BGRA)
 //   width, height — frame dimensions in pixels
@@ -33,18 +35,30 @@ using DXGIFrameCallback =
 ///   if (!backend.start(0, true, 60, my_callback, err)) { ... }
 ///   // ... frames arrive via callback ...
 ///   backend.stop(); // joins thread, safe to call multiple times
-class DXGICaptureBackend {
+class DXGICaptureBackend : public CaptureBackend {
 public:
 	DXGICaptureBackend() = default;
-	~DXGICaptureBackend();
+	~DXGICaptureBackend() override;
 
 	// Start capturing monitor at monitor_index.
 	// Returns false and writes a snake_case reason into error_out on failure.
 	bool start(int monitor_index, bool capture_cursor, int max_fps,
-			DXGIFrameCallback callback, std::string &error_out);
+			std::function<void(const uint8_t *, int32_t, int32_t)> callback,
+			std::string &error_out) override;
 
 	// Stop the capture loop and join the thread.  Idempotent.
-	void stop();
+	void stop() override;
+
+	// Register an optional callback that receives diagnostic log lines.
+	// Must be called before start().  The callback may be invoked from the
+	// capture thread, so it must be thread-safe (e.g. WARN_PRINT is).
+	void set_log_callback(std::function<void(const std::string &)> cb) override {
+		_log_callback = std::move(cb);
+	}
+
+	void set_error_callback(std::function<void(const std::string &)> cb) override {
+		_error_callback = std::move(cb);
+	}
 
 	// Static helpers — no D3D device required, usable before start().
 	static int enumerate_monitor_count();
@@ -73,6 +87,9 @@ private:
 	// Returns false if all retries exhausted.
 	bool _reinit_duplication();
 
+	// Emit a diagnostic log message via the optional log callback.
+	void _log(const std::string &msg);
+
 	// Fetch the current pointer shape from the duplication into _cursor_shape.
 	bool _update_cursor_shape(IDXGIOutputDuplication *dup,
 			const DXGI_OUTDUPL_FRAME_INFO &info);
@@ -95,6 +112,13 @@ private:
 	int _max_fps = 60;
 	int32_t _frame_width = 0;
 	int32_t _frame_height = 0;
+
+	// Optional diagnostic logger — set before start() via set_log_callback().
+	// Called from the capture thread and init path with human-readable messages
+	// that include raw HRESULT codes so callers can surface them in the Godot
+	// Output panel without a debugger.
+	std::function<void(const std::string &)> _log_callback;
+	std::function<void(const std::string &)> _error_callback;
 
 	// ---- Thread ----
 	std::atomic<bool> _running{ false };
