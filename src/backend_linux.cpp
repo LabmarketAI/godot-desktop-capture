@@ -821,10 +821,15 @@ PipeWireCaptureBackend::~PipeWireCaptureBackend() {
 	stop();
 }
 
-bool PipeWireCaptureBackend::start(int monitor_index, bool capture_cursor,
+bool PipeWireCaptureBackend::start(int monitor_index, int64_t window_id, bool capture_cursor,
 		int max_fps, PWFrameCallback callback, std::string &error_out) {
 	if (_running.load()) {
 		stop();
+	}
+
+	if (window_id != 0) {
+		error_out = "pipewire_window_capture_not_yet_implemented";
+		return false;
 	}
 
 	_monitor_index = monitor_index;

@@ -5,12 +5,14 @@ from pathlib import Path
 
 env = SConscript("godot-cpp/SConstruct")
 
-# SCons' MSVC auto-detection can replace the LIB/INCLUDE paths that
-# vcvarsall.bat already set up correctly, causing the linker to fail
-# to find CRT libraries such as libcmt.lib.  Restore the vcvarsall
-# paths so they take priority over whatever SCons detected.
+# SCons' MSVC auto-detection can replace the LIB/INCLUDE/PATH values that
+# vcvarsall.bat already set up correctly.  Restoring them ensures that:
+#   - LIB/INCLUDE  -> the right CRT and SDK headers/libs are found
+#   - PATH         -> cl.exe comes from the same toolset as those headers,
+#                     preventing STL1001 "unexpected compiler version" errors
+#                     when the installed toolset is newer than SCons' detected one.
 if env["platform"] == "windows":
-    for evar in ("LIB", "INCLUDE"):
+    for evar in ("LIB", "INCLUDE", "PATH"):
         val = os.environ.get(evar, "")
         if val:
             env.PrependENVPath(evar, val)
@@ -19,10 +21,14 @@ if env["platform"] == "windows":
 env.Append(CPPPATH=["src/"])
 sources = Glob("src/*.cpp")
 
-# Windows-specific: link against DXGI / D3D11; require Windows 8+ for IDXGIOutputDuplication.
+# Windows-specific: link against DXGI / D3D11 / WinRT (C++/WinRT WINRT_IMPL_* stubs).
+# windowsapp.lib provides the WINRT_IMPL_* forwarding symbols used by C++/WinRT
+# headers and works for both UWP and Win32 desktop apps.
 if env["platform"] == "windows":
-    env.Append(LIBS=["dxgi", "d3d11"])
+    env.Append(LIBS=["dxgi", "d3d11", "windowsapp", "user32"])
     env.Append(CPPDEFINES=["_WIN32_WINNT=0x0602"])
+    # /EHsc is required by C++/WinRT try/catch in backend_wgc.cpp.
+    env.Append(CXXFLAGS=["/EHsc"])
 
 # Linux-specific: headers for PipeWire and D-Bus (runtime dlopen; no link-time dep)
 # Build deps only: sudo apt-get install libpipewire-0.3-dev libdbus-1-dev

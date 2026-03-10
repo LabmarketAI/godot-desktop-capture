@@ -8,6 +8,7 @@
 #include <cstring>
 
 #ifdef _WIN32
+#include "backend_wgc.h"
 #include "backend_windows.h"
 #endif
 #ifdef __linux__
@@ -28,6 +29,10 @@ void DesktopCaptureTexture::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "monitor_index", PROPERTY_HINT_RANGE, "0,8,1"),
 			"set_monitor_index", "get_monitor_index");
 
+     ClassDB::bind_method(D_METHOD("set_window_id", "id"), &DesktopCaptureTexture::set_window_id);
+ ClassDB::bind_method(D_METHOD("get_window_id"), &DesktopCaptureTexture::get_window_id);
+ ADD_PROPERTY(PropertyInfo(Variant::INT, "window_id"), "set_window_id", "get_window_id");
+
 	ClassDB::bind_method(D_METHOD("set_capture_cursor", "capture"), &DesktopCaptureTexture::set_capture_cursor);
 	ClassDB::bind_method(D_METHOD("get_capture_cursor"), &DesktopCaptureTexture::get_capture_cursor);
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "capture_cursor"), "set_capture_cursor", "get_capture_cursor");
@@ -39,8 +44,19 @@ void DesktopCaptureTexture::_bind_methods() {
 
 	// --- Methods ---
 
+       ClassDB::bind_method(D_METHOD("get_available_windows"), &DesktopCaptureTexture::get_available_windows);
+
 	ClassDB::bind_method(D_METHOD("get_monitor_count"), &DesktopCaptureTexture::get_monitor_count);
 	ClassDB::bind_method(D_METHOD("get_monitor_size", "index"), &DesktopCaptureTexture::get_monitor_size);
+
+	// Internal: deferred backend start (registered so call_deferred can invoke it).
+	ClassDB::bind_method(D_METHOD("_start_backend"), &DesktopCaptureTexture::_start_backend);
+
+	// Internal: called via call_deferred from the capture thread to push a new
+	// frame onto the main thread (avoids ObjectDB thread-safety issues with
+	// callable_mp + call_on_render_thread from GDExtension objects).
+	ClassDB::bind_method(D_METHOD("_push_frame_deferred", "image"),
+			&DesktopCaptureTexture::_push_frame_deferred);
 
 	// --- Signals ---
 
@@ -55,13 +71,17 @@ void DesktopCaptureTexture::_bind_methods() {
 	// "device_lost", "missing_dependency", "monitor_index_out_of_range".
 	ADD_SIGNAL(MethodInfo("capture_stopped",
 			PropertyInfo(Variant::STRING, "reason")));
+
+	// Emitted when an error occurs during capture that might require a restart.
+	ADD_SIGNAL(MethodInfo("capture_error",
+			PropertyInfo(Variant::STRING, "error_message")));
 }
 
 DesktopCaptureTexture::DesktopCaptureTexture() {
 	// Create a 1×1 black placeholder so _get_rid() always returns a valid RID.
 	// Backends replace the texture contents via _push_frame(); the RID itself
 	// never changes, so materials assigned before capture starts keep working.
-	Ref<Image> placeholder = Image::create_empty(1, 1, false, Image::FORMAT_RGB8);
+	Ref<Image> placeholder = Image::create_empty(1, 1, false, Image::FORMAT_RGBA8);
 	_texture_rid = RenderingServer::get_singleton()->texture_2d_create(placeholder);
 }
 
@@ -117,34 +137,86 @@ void DesktopCaptureTexture::set_enabled(bool p_enabled) {
 		return;
 	}
 
-	// Attempt to start the platform backend.
+	// Mark as enabled and defer the actual backend start to the next main-thread
+	// frame.  This avoids a race during TSCN scene loading where the resource's
+	// reference count can temporarily drop to zero between property-set time and
+	// the material taking ownership, causing the destructor (and stop()) to fire
+	// before any frames are captured.
+	_enabled = true;
+	call_deferred("_start_backend");
+}
+
+void DesktopCaptureTexture::_start_backend() {
+	// Called via call_deferred from set_enabled(true).  By this point the scene
+	// loader has finished and all references to this resource are established.
+	if (!_enabled) {
+		return; // Disabled again before we ran — nothing to do.
+	}
+#if defined(_WIN32) || defined(__linux__)
+	if (_backend) {
+		return; // Already started (e.g. called twice).
+	}
+#endif
+
 #ifdef _WIN32
 	{
-		DXGICaptureBackend *backend = new DXGICaptureBackend();
-		std::string error;
-
-		// The callback runs on the DXGICaptureBackend thread.  It wraps the raw
-		// pixel buffer in an Image and dispatches _push_frame() to the render thread.
+		// The frame callback runs on the backend's capture thread.  It wraps
+		// the raw RGBA8 buffer in an Image and dispatches _push_frame_deferred()
+		// to the main thread via call_deferred.  This avoids the ObjectDB
+		// thread-safety issue that causes callable_mp + call_on_render_thread
+		// to silently drop calls for GDExtension RefCounted objects.
 		auto callback = [this](const uint8_t *data, int32_t w, int32_t h) {
 			PackedByteArray bytes;
 			bytes.resize(w * h * 4);
 			memcpy(bytes.ptrw(), data, static_cast<size_t>(w * h * 4));
 			Ref<Image> image = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, bytes);
-			// Dispatch to render thread so texture_2d_update and emit_changed are safe.
-			RenderingServer::get_singleton()->call_on_render_thread(
-					callable_mp(this, &DesktopCaptureTexture::_push_frame)
-							.bind(image, w, h));
+			call_deferred("_push_frame_deferred", image);
 		};
 
-		if (!backend->start(_monitor_index, _capture_cursor, _max_fps, callback, error)) {
-			delete backend;
-			_enabled = false;
-			emit_signal("capture_stopped", String(error.c_str()));
-			return;
+		auto log_cb = [](const std::string &msg) {
+			WARN_PRINT(msg.c_str());
+		};
+
+		auto error_cb = [this](const std::string &msg) {
+			call_deferred("emit_signal", "capture_error", String(msg.c_str()));
+		};
+
+		std::string error;
+
+		// Try Windows.Graphics.Capture first — it works even when the VR runtime
+		// suspends DWM desktop composition (where DXGI Desktop Duplication only
+		// returns WAIT_TIMEOUT indefinitely).
+		{
+			WGCCaptureBackend *wgc = new WGCCaptureBackend();
+			wgc->set_log_callback(log_cb);
+			wgc->set_error_callback(error_cb);
+			if (wgc->start(_monitor_index, _window_id, _capture_cursor, _max_fps, callback, error)) {
+				_backend = wgc;
+				emit_signal("capture_started");
+				return;
+			}
+			// WGC unavailable (old Windows build, permission denied, etc.) —
+			// fall through to DXGI.
+			WARN_PRINT(("DesktopCapture: WGC backend failed (" + error +
+					"), falling back to DXGI Desktop Duplication")
+							.c_str());
+			delete wgc;
 		}
-		_backend = backend;
-		_enabled = true;
-		emit_signal("capture_started");
+
+		// DXGI Desktop Duplication fallback.
+		{
+			DXGICaptureBackend *dxgi = new DXGICaptureBackend();
+			dxgi->set_log_callback(log_cb);
+			dxgi->set_error_callback(error_cb);
+			if (!dxgi->start(_monitor_index, _window_id, _capture_cursor, _max_fps, callback, error)) {
+				delete dxgi;
+				_enabled = false;
+				emit_signal("capture_stopped", String(error.c_str()));
+				return;
+			}
+			_backend = dxgi;
+			emit_signal("capture_started");
+		}
 	}
 #elif defined(__linux__)
 	{
@@ -156,19 +228,22 @@ void DesktopCaptureTexture::set_enabled(bool p_enabled) {
 			bytes.resize(w * h * 4);
 			memcpy(bytes.ptrw(), data, static_cast<size_t>(w * h * 4));
 			Ref<Image> image = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, bytes);
-			RenderingServer::get_singleton()->call_on_render_thread(
-					callable_mp(this, &DesktopCaptureTexture::_push_frame)
-							.bind(image, w, h));
+			call_deferred("_push_frame_deferred", image);
 		};
 
-		if (!backend->start(_monitor_index, _capture_cursor, _max_fps, callback, error)) {
+		auto error_cb = [this](const std::string &msg) {
+			call_deferred("emit_signal", "capture_error", String(msg.c_str()));
+		};
+
+		backend->set_error_callback(error_cb);
+
+		if (!backend->start(_monitor_index, _window_id, _capture_cursor, _max_fps, callback, error)) {
 			delete backend;
 			_enabled = false;
 			emit_signal("capture_stopped", String(error.c_str()));
 			return;
 		}
 		_backend = backend;
-		_enabled = true;
 		emit_signal("capture_started");
 	}
 #else
@@ -183,12 +258,44 @@ bool DesktopCaptureTexture::get_enabled() const {
 }
 
 void DesktopCaptureTexture::set_monitor_index(int p_index) {
+	if (p_index == _monitor_index) {
+		return;
+	}
 	_monitor_index = p_index;
 	if (_enabled) {
 		// Restart the backend on the new monitor.
 		set_enabled(false);
 		set_enabled(true);
 	}
+}
+
+void DesktopCaptureTexture::set_window_id(int64_t p_id) {
+	if (p_id == _window_id) {
+		return;
+	}
+	_window_id = p_id;
+	if (_enabled) {
+		// Restart the backend on the new window.
+		set_enabled(false);
+		set_enabled(true);
+	}
+}
+
+int64_t DesktopCaptureTexture::get_window_id() const {
+	return _window_id;
+}
+
+Array DesktopCaptureTexture::get_available_windows() const {
+	Array result;
+#ifdef _WIN32
+	WGCCaptureBackend::enumerate_windows([&result](int64_t hwnd, const std::string& title) {
+		Dictionary dict;
+		dict["id"] = hwnd;
+		dict["title"] = String::utf8(title.c_str());
+		result.push_back(dict);
+	});
+#endif
+	return result;
 }
 
 int DesktopCaptureTexture::get_monitor_index() const {
@@ -237,20 +344,25 @@ Vector2i DesktopCaptureTexture::get_monitor_size(int p_index) const {
 	return Vector2i(0, 0);
 }
 
-// --- Internal: called by platform backends on the render thread ---
+// --- Internal: called via call_deferred from the capture thread ---
 
-void DesktopCaptureTexture::_push_frame(const Ref<Image> &p_image, int32_t p_width, int32_t p_height) {
-	// This method is called from RenderingServer::call_on_render_thread() by
-	// the platform backend.  It runs on the render thread — do not call from
-	// the capture thread directly.
+void DesktopCaptureTexture::_push_frame_deferred(const Ref<Image> &p_image) {
+	// Runs on the main thread (queued via call_deferred from the capture thread).
+	// Using call_deferred instead of call_on_render_thread + callable_mp avoids
+	// the ObjectDB thread-safety issue where GDExtension RefCounted objects are
+	// not found when looked up from the render thread, causing silent drops.
 	ERR_FAIL_COND(!_texture_rid.is_valid());
 	ERR_FAIL_COND(p_image.is_null());
+
+	const int32_t p_width = p_image->get_width();
+	const int32_t p_height = p_image->get_height();
 
 	if (p_width != _width || p_height != _height) {
 		// Resolution changed (monitor reconfigured, first real frame, etc.).
 		// Recreate the RenderingServer texture at the new size.
-		RenderingServer::get_singleton()->free_rid(_texture_rid);
-		_texture_rid = RenderingServer::get_singleton()->texture_2d_create(p_image);
+		WARN_PRINT(("DesktopCapture: first frame " + std::to_string(p_width) + "x" + std::to_string(p_height) + " -- updating dimensions with texture_replace").c_str());
+		RID new_rid = RenderingServer::get_singleton()->texture_2d_create(p_image);
+		RenderingServer::get_singleton()->texture_replace(_texture_rid, new_rid);
 		_width = p_width;
 		_height = p_height;
 	} else {
@@ -259,4 +371,10 @@ void DesktopCaptureTexture::_push_frame(const Ref<Image> &p_image, int32_t p_wid
 
 	emit_changed(); // invalidates materials that hold this texture
 	emit_signal("frame_updated");
+}
+
+// --- Legacy: kept for binary compatibility but no longer called internally ---
+
+void DesktopCaptureTexture::_push_frame(const Ref<Image> &p_image, int32_t p_width, int32_t p_height) {
+	_push_frame_deferred(p_image);
 }

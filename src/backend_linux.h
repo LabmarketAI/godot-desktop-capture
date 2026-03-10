@@ -2,6 +2,8 @@
 
 #ifdef __linux__
 
+#include "backend_base.h"
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -42,19 +44,28 @@ using PWFrameCallback =
 /// - The portal shows a compositor picker dialog on first use (Step 3/Start).
 ///   monitor_index is forwarded as a hint but the user ultimately decides.
 /// - DMA-BUF buffers are skipped (SHM path only). Vulkan zero-copy is #6 / future.
-class PipeWireCaptureBackend {
+class PipeWireCaptureBackend : public CaptureBackend {
 public:
 	PipeWireCaptureBackend() = default;
-	~PipeWireCaptureBackend();
+	~PipeWireCaptureBackend() override;
 
 	// Start capturing. Runs the portal D-Bus flow synchronously, then launches
 	// the PipeWire main loop on a background thread.
 	// Returns false and writes a snake_case reason into error_out on failure.
-	bool start(int monitor_index, bool capture_cursor, int max_fps,
-			PWFrameCallback callback, std::string &error_out);
+	bool start(int monitor_index, int64_t window_id, bool capture_cursor, int max_fps,
+			std::function<void(const uint8_t *, int32_t, int32_t)> callback,
+			std::string &error_out) override;
 
 	// Stop the capture loop and join the thread.  Idempotent.
-	void stop();
+	void stop() override;
+
+	void set_log_callback(std::function<void(const std::string &)>) override {
+		// Linux backend does not currently surface structured log callbacks.
+	}
+
+	void set_error_callback(std::function<void(const std::string &)> cb) override {
+		_error_callback = std::move(cb);
+	}
 
 	// Static helpers — usable before start().
 	// enumerate_monitor_count uses sysfs DRM to count connected outputs.
@@ -110,6 +121,7 @@ private:
 	std::atomic<bool> _running{ false };
 	std::thread _pw_thread;
 	PWFrameCallback _frame_callback;
+	std::function<void(const std::string &)> _error_callback;
 };
 
 #endif // __linux__
