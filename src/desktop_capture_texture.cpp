@@ -29,6 +29,10 @@ void DesktopCaptureTexture::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "monitor_index", PROPERTY_HINT_RANGE, "0,8,1"),
 			"set_monitor_index", "get_monitor_index");
 
+     ClassDB::bind_method(D_METHOD("set_window_id", "id"), &DesktopCaptureTexture::set_window_id);
+ ClassDB::bind_method(D_METHOD("get_window_id"), &DesktopCaptureTexture::get_window_id);
+ ADD_PROPERTY(PropertyInfo(Variant::INT, "window_id"), "set_window_id", "get_window_id");
+
 	ClassDB::bind_method(D_METHOD("set_capture_cursor", "capture"), &DesktopCaptureTexture::set_capture_cursor);
 	ClassDB::bind_method(D_METHOD("get_capture_cursor"), &DesktopCaptureTexture::get_capture_cursor);
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "capture_cursor"), "set_capture_cursor", "get_capture_cursor");
@@ -39,6 +43,8 @@ void DesktopCaptureTexture::_bind_methods() {
 			"set_max_fps", "get_max_fps");
 
 	// --- Methods ---
+
+       ClassDB::bind_method(D_METHOD("get_available_windows"), &DesktopCaptureTexture::get_available_windows);
 
 	ClassDB::bind_method(D_METHOD("get_monitor_count"), &DesktopCaptureTexture::get_monitor_count);
 	ClassDB::bind_method(D_METHOD("get_monitor_size", "index"), &DesktopCaptureTexture::get_monitor_size);
@@ -184,7 +190,7 @@ void DesktopCaptureTexture::_start_backend() {
 			WGCCaptureBackend *wgc = new WGCCaptureBackend();
 			wgc->set_log_callback(log_cb);
 			wgc->set_error_callback(error_cb);
-			if (wgc->start(_monitor_index, _capture_cursor, _max_fps, callback, error)) {
+			if (wgc->start(_monitor_index, _window_id, _capture_cursor, _max_fps, callback, error)) {
 				_backend = wgc;
 				emit_signal("capture_started");
 				return;
@@ -202,7 +208,7 @@ void DesktopCaptureTexture::_start_backend() {
 			DXGICaptureBackend *dxgi = new DXGICaptureBackend();
 			dxgi->set_log_callback(log_cb);
 			dxgi->set_error_callback(error_cb);
-			if (!dxgi->start(_monitor_index, _capture_cursor, _max_fps, callback, error)) {
+			if (!dxgi->start(_monitor_index, _window_id, _capture_cursor, _max_fps, callback, error)) {
 				delete dxgi;
 				_enabled = false;
 				emit_signal("capture_stopped", String(error.c_str()));
@@ -231,7 +237,7 @@ void DesktopCaptureTexture::_start_backend() {
 
 		backend->set_error_callback(error_cb);
 
-		if (!backend->start(_monitor_index, _capture_cursor, _max_fps, callback, error)) {
+		if (!backend->start(_monitor_index, _window_id, _capture_cursor, _max_fps, callback, error)) {
 			delete backend;
 			_enabled = false;
 			emit_signal("capture_stopped", String(error.c_str()));
@@ -261,6 +267,35 @@ void DesktopCaptureTexture::set_monitor_index(int p_index) {
 		set_enabled(false);
 		set_enabled(true);
 	}
+}
+
+void DesktopCaptureTexture::set_window_id(int64_t p_id) {
+	if (p_id == _window_id) {
+		return;
+	}
+	_window_id = p_id;
+	if (_enabled) {
+		// Restart the backend on the new window.
+		set_enabled(false);
+		set_enabled(true);
+	}
+}
+
+int64_t DesktopCaptureTexture::get_window_id() const {
+	return _window_id;
+}
+
+Array DesktopCaptureTexture::get_available_windows() const {
+	Array result;
+#ifdef _WIN32
+	WGCCaptureBackend::enumerate_windows([&result](int64_t hwnd, const std::string& title) {
+		Dictionary dict;
+		dict["id"] = hwnd;
+		dict["title"] = String::utf8(title.c_str());
+		result.push_back(dict);
+	});
+#endif
+	return result;
 }
 
 int DesktopCaptureTexture::get_monitor_index() const {
@@ -325,9 +360,9 @@ void DesktopCaptureTexture::_push_frame_deferred(const Ref<Image> &p_image) {
 	if (p_width != _width || p_height != _height) {
 		// Resolution changed (monitor reconfigured, first real frame, etc.).
 		// Recreate the RenderingServer texture at the new size.
-		WARN_PRINT(("DesktopCapture: first frame " + std::to_string(p_width) + "x" + std::to_string(p_height) + " -- recreating RID").c_str());
-		RenderingServer::get_singleton()->free_rid(_texture_rid);
-		_texture_rid = RenderingServer::get_singleton()->texture_2d_create(p_image);
+		WARN_PRINT(("DesktopCapture: first frame " + std::to_string(p_width) + "x" + std::to_string(p_height) + " -- updating dimensions with texture_replace").c_str());
+		RID new_rid = RenderingServer::get_singleton()->texture_2d_create(p_image);
+		RenderingServer::get_singleton()->texture_replace(_texture_rid, new_rid);
 		_width = p_width;
 		_height = p_height;
 	} else {

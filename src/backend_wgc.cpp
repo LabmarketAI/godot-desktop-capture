@@ -175,6 +175,24 @@ void WGCCaptureBackend::_log(const std::string &msg) {
 // Static helpers -- DXGI enumeration, same ordering as DXGICaptureBackend
 // ---------------------------------------------------------------------------
 
+void WGCCaptureBackend::enumerate_windows(std::function<void(int64_t, const std::string&)> cb) {
+	EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+		auto* callback = reinterpret_cast<std::function<void(int64_t, const std::string&)>*>(lParam);
+		if (IsWindowVisible(hwnd) && !IsIconic(hwnd)) {
+			// Basic filter to ignore tooltips, empty titles, etc.
+			LONG style = GetWindowLong(hwnd, GWL_STYLE);
+			LONG ex_style = GetWindowLong(hwnd, GWL_EXSTYLE);
+			if ((style & WS_CAPTION) && !(ex_style & WS_EX_TOOLWINDOW)) {
+				char title[256];
+				if (GetWindowTextA(hwnd, title, sizeof(title)) > 0) {
+					(*callback)((int64_t)hwnd, std::string(title));
+				}
+			}
+		}
+		return TRUE;
+	}, reinterpret_cast<LPARAM>(&cb));
+}
+
 int WGCCaptureBackend::enumerate_monitor_count() {
 	IDXGIFactory1 *factory = nullptr;
 	if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
@@ -238,7 +256,7 @@ bool WGCCaptureBackend::get_monitor_size(int index, int32_t &out_w, int32_t &out
 // start() -- spawns capture thread, waits for WGC init result
 // ---------------------------------------------------------------------------
 
-bool WGCCaptureBackend::start(int monitor_index, bool capture_cursor,
+bool WGCCaptureBackend::start(int monitor_index, int64_t window_id, bool capture_cursor,
 		int max_fps, std::function<void(const uint8_t *, int32_t, int32_t)> callback,
 		std::string &error_out) {
 	if (_running.load()) {
@@ -251,7 +269,7 @@ bool WGCCaptureBackend::start(int monitor_index, bool capture_cursor,
 
 	_running.store(true);
 	_thread = std::thread(
-			[this, monitor_index, capture_cursor, max_fps,
+			[this, monitor_index, window_id, capture_cursor, max_fps,
 					prom = std::move(ready_promise)]() mutable {
 				// ---- WinRT MTA apartment ----
 				bool com_ok = false;
@@ -302,27 +320,47 @@ bool WGCCaptureBackend::start(int monitor_index, bool capture_cursor,
 					}
 				}
 
-				// ---- HMONITOR for the requested index ----
-				HMONITOR hmonitor = _hmonitor_for_index(monitor_index);
-				if (!hmonitor) {
-					_log("DesktopCapture[WGC]: monitor index " +
-							std::to_string(monitor_index) + " not found");
-					prom.set_value({ false, "monitor_index_out_of_range" });
-					_running.store(false);
-					winrt::uninit_apartment();
-					return;
+				// ---- HMONITOR for the requested index (if no window selected) ----
+				HMONITOR hmonitor = nullptr;
+				if (window_id == 0) {
+					hmonitor = _hmonitor_for_index(monitor_index);
+					if (!hmonitor) {
+						_log("DesktopCapture[WGC]: monitor index " +
+								std::to_string(monitor_index) + " not found");
+						prom.set_value({ false, "monitor_index_out_of_range" });
+						_running.store(false);
+						winrt::uninit_apartment();
+						return;
+					}
 				}
 
-				// ---- GraphicsCaptureItem for the monitor ----
+				// ---- GraphicsCaptureItem for the monitor or window ----
 				wgc::GraphicsCaptureItem item{ nullptr };
 				try {
 					auto interop = winrt::get_activation_factory<
 							wgc::GraphicsCaptureItem,
 							IGraphicsCaptureItemInterop>();
-					winrt::check_hresult(interop->CreateForMonitor(
-							hmonitor,
-							winrt::guid_of<wgc::GraphicsCaptureItem>(),
-							winrt::put_abi(item)));
+					
+					if (window_id != 0) {
+						HWND hwnd = reinterpret_cast<HWND>(window_id);
+						if (!IsWindow(hwnd)) {
+							_log("DesktopCapture[WGC]: window HWND " +
+									std::to_string(window_id) + " is invalid");
+							prom.set_value({ false, "invalid_window_id" });
+							_running.store(false);
+							winrt::uninit_apartment();
+							return;
+						}
+						winrt::check_hresult(interop->CreateForWindow(
+								hwnd,
+								winrt::guid_of<wgc::GraphicsCaptureItem>(),
+								winrt::put_abi(item)));
+					} else {
+						winrt::check_hresult(interop->CreateForMonitor(
+								hmonitor,
+								winrt::guid_of<wgc::GraphicsCaptureItem>(),
+								winrt::put_abi(item)));
+					}
 				} catch (winrt::hresult_error const &e) {
 					_log("DesktopCapture[WGC]: GraphicsCaptureItem create failed hr=" +
 							_hr_str(e.code()));
@@ -368,8 +406,13 @@ bool WGCCaptureBackend::start(int monitor_index, bool capture_cursor,
 					return;
 				}
 
-				_log("DesktopCapture[WGC]: capture started on monitor " +
-						std::to_string(monitor_index));
+if (window_id != 0) {
+								_log("DesktopCapture[WGC]: capture started on window HWND " +
+										std::to_string(window_id));
+							} else {
+								_log("DesktopCapture[WGC]: capture started on monitor " +
+										std::to_string(monitor_index));
+							}
 				prom.set_value({ true, "" });
 
 				// ---- Polling loop -- wrapped in top-level try/catch ----

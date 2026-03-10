@@ -25,7 +25,7 @@ sources = Glob("src/*.cpp")
 # windowsapp.lib provides the WINRT_IMPL_* forwarding symbols used by C++/WinRT
 # headers and works for both UWP and Win32 desktop apps.
 if env["platform"] == "windows":
-    env.Append(LIBS=["dxgi", "d3d11", "windowsapp"])
+    env.Append(LIBS=["dxgi", "d3d11", "windowsapp", "user32"])
     env.Append(CPPDEFINES=["_WIN32_WINNT=0x0602"])
     # /EHsc is required by C++/WinRT try/catch in backend_wgc.cpp.
     env.Append(CXXFLAGS=["/EHsc"])

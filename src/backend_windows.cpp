@@ -35,10 +35,15 @@ DXGICaptureBackend::~DXGICaptureBackend() {
 // Public: start / stop
 // ---------------------------------------------------------------------------
 
-bool DXGICaptureBackend::start(int monitor_index, bool capture_cursor,
+bool DXGICaptureBackend::start(int monitor_index, int64_t window_id, bool capture_cursor,
 		int max_fps, DXGIFrameCallback callback, std::string &error_out) {
 	if (_running.load()) {
 		stop();
+	}
+
+	if (window_id != 0) {
+		error_out = "dxgi_does_not_support_window_capture";
+		return false;
 	}
 
 	_monitor_index = monitor_index;

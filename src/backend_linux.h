@@ -52,7 +52,7 @@ public:
 	// Start capturing. Runs the portal D-Bus flow synchronously, then launches
 	// the PipeWire main loop on a background thread.
 	// Returns false and writes a snake_case reason into error_out on failure.
-	bool start(int monitor_index, bool capture_cursor, int max_fps,
+	bool start(int monitor_index, int64_t window_id, bool capture_cursor, int max_fps,
 			std::function<void(const uint8_t *, int32_t, int32_t)> callback,
 			std::string &error_out) override;
 

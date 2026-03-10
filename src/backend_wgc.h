@@ -24,7 +24,7 @@ public:
 	WGCCaptureBackend() = default;
 	~WGCCaptureBackend() override;
 
-	bool start(int monitor_index, bool capture_cursor, int max_fps,
+	bool start(int monitor_index, int64_t window_id, bool capture_cursor, int max_fps,
 			std::function<void(const uint8_t *, int32_t, int32_t)> callback,
 			std::string &error_out) override;
 
@@ -37,6 +37,8 @@ public:
 	void set_error_callback(std::function<void(const std::string &)> cb) override {
 		_error_callback = std::move(cb);
 	}
+
+	static void enumerate_windows(std::function<void(int64_t, const std::string&)> cb);
 
 	// Static helpers — usable before start().
 	static int enumerate_monitor_count();

@@ -11,7 +11,7 @@
 /// at runtime without knowing the concrete type.
 struct CaptureBackend {
 	virtual ~CaptureBackend() = default;
-	virtual bool start(int monitor_index, bool capture_cursor, int max_fps,
+	virtual bool start(int monitor_index, int64_t window_id, bool capture_cursor, int max_fps,
 			std::function<void(const uint8_t *, int32_t, int32_t)> callback,
 			std::string &error_out) = 0;
 	virtual void stop() = 0;

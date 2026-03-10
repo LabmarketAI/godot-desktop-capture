@@ -5,6 +5,8 @@
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/rid.hpp>
+#include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
 #include "backend_base.h"
@@ -56,6 +58,7 @@ private:
 	// User-facing properties.
 	bool _enabled = false; // false until explicitly started; avoids auto-capture on load
 	int _monitor_index = 0;
+        int64_t _window_id = 0;
 	bool _capture_cursor = true;
 	int _max_fps = 60;
 
@@ -101,6 +104,11 @@ public:
 	/// Zero-based index of the monitor to capture.
 	/// Use get_monitor_count() to check how many monitors are available.
 	/// Changing this while enabled restarts the capture loop on the new monitor.
+        void set_window_id(int64_t p_id);
+        int64_t get_window_id() const;
+
+        Array get_available_windows() const;
+
 	void set_monitor_index(int p_index);
 	int get_monitor_index() const;
 
