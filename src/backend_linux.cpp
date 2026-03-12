@@ -93,10 +93,7 @@ struct DynDbus {
 };
 
 // ---- PipeWire ----
-// Only true ABI exports from libpipewire-0.3.so.0.
-// pw_stream_add_listener, pw_stream_connect, pw_stream_dequeue_buffer,
-// pw_stream_queue_buffer, pw_core_disconnect etc. are static-inline vtable
-// wrappers — call them directly, do NOT add them here.
+// All ABI exports from libpipewire-0.3.so.0 — loaded via dlopen.
 #define PW_FUNCS(X) \
 	X(void, pw_init, (int *, char ***)) \
 	X(void, pw_deinit, (void)) \
@@ -110,10 +107,19 @@ struct DynDbus {
 	X(void, pw_context_destroy, (struct pw_context *)) \
 	X(struct pw_core *, pw_context_connect, \
 			(struct pw_context *, struct pw_properties *, size_t)) \
+	X(int, pw_core_disconnect, (struct pw_core *)) \
 	X(void, pw_properties_free, (struct pw_properties *)) \
 	X(struct pw_stream *, pw_stream_new, \
 			(struct pw_core *, const char *, struct pw_properties *)) \
-	X(void, pw_stream_destroy, (struct pw_stream *))
+	X(void, pw_stream_destroy, (struct pw_stream *)) \
+	X(void, pw_stream_add_listener, (struct pw_stream *, struct spa_hook *, \
+			const struct pw_stream_events *, void *)) \
+	X(int, pw_stream_connect, (struct pw_stream *, enum pw_direction, \
+			uint32_t, enum pw_stream_flags, \
+			const struct spa_pod **, uint32_t)) \
+	X(int, pw_stream_disconnect, (struct pw_stream *)) \
+	X(struct pw_buffer *, pw_stream_dequeue_buffer, (struct pw_stream *)) \
+	X(int, pw_stream_queue_buffer, (struct pw_stream *, struct pw_buffer *))
 
 struct DynPW {
 	void *handle = nullptr;
@@ -617,15 +623,15 @@ void PipeWireCaptureBackend::_on_process(void *data) {
 									 .count();
 		if (elapsed_us < min_interval_us) {
 			// Dequeue and immediately re-queue so the server can reuse the buffer.
-			struct pw_buffer *b = pw_stream_dequeue_buffer(self->_pw_stream);
+			struct pw_buffer *b = g_pw.pw_stream_dequeue_buffer(self->_pw_stream);
 			if (b) {
-				pw_stream_queue_buffer(self->_pw_stream, b);
+				g_pw.pw_stream_queue_buffer(self->_pw_stream, b);
 			}
 			return;
 		}
 	}
 
-	struct pw_buffer *pw_buf = pw_stream_dequeue_buffer(self->_pw_stream);
+	struct pw_buffer *pw_buf = g_pw.pw_stream_dequeue_buffer(self->_pw_stream);
 	if (!pw_buf) {
 		return;
 	}
@@ -635,21 +641,21 @@ void PipeWireCaptureBackend::_on_process(void *data) {
 
 	// Skip DMA-BUF — SHM path only in this implementation.
 	if (d->type == SPA_DATA_DmaBuf) {
-		pw_stream_queue_buffer(self->_pw_stream, pw_buf);
+		g_pw.pw_stream_queue_buffer(self->_pw_stream, pw_buf);
 		return;
 	}
 
 	// MAP_BUFFERS flag ensures d->data is already mmap'd for MemFd,
 	// or is a direct MemPtr for shared memory.
 	if (!d->data || d->chunk->size == 0) {
-		pw_stream_queue_buffer(self->_pw_stream, pw_buf);
+		g_pw.pw_stream_queue_buffer(self->_pw_stream, pw_buf);
 		return;
 	}
 
 	const int32_t w = self->_frame_width.load();
 	const int32_t h = self->_frame_height.load();
 	if (w <= 0 || h <= 0) {
-		pw_stream_queue_buffer(self->_pw_stream, pw_buf);
+		g_pw.pw_stream_queue_buffer(self->_pw_stream, pw_buf);
 		return;
 	}
 
@@ -672,7 +678,7 @@ void PipeWireCaptureBackend::_on_process(void *data) {
 		}
 	}
 
-	pw_stream_queue_buffer(self->_pw_stream, pw_buf);
+	g_pw.pw_stream_queue_buffer(self->_pw_stream, pw_buf);
 	self->_last_frame_time = now;
 
 	if (self->_frame_callback) {
@@ -724,7 +730,7 @@ bool PipeWireCaptureBackend::_pw_setup(uint32_t node_id,
 	_pw_stream = g_pw.pw_stream_new(_pw_core, "godot-desktop-capture", props);
 	// pw_stream_new takes ownership of props; do not call pw_properties_free.
 	if (!_pw_stream) {
-		pw_core_disconnect(_pw_core); // static inline
+		g_pw.pw_core_disconnect(_pw_core);
 		_pw_core = nullptr;
 		g_pw.pw_context_destroy(_pw_context);
 		_pw_context = nullptr;
@@ -743,7 +749,7 @@ bool PipeWireCaptureBackend::_pw_setup(uint32_t node_id,
 
 	_pw_listener = new spa_hook();
 	memset(_pw_listener, 0, sizeof(*_pw_listener));
-	pw_stream_add_listener(_pw_stream, _pw_listener, _pw_events, this); // inline
+	g_pw.pw_stream_add_listener(_pw_stream, _pw_listener, _pw_events, this);
 
 	// Build stream format params (SPA inline functions — no dlopen needed).
 	uint8_t pod_buf[1024];
@@ -753,7 +759,7 @@ bool PipeWireCaptureBackend::_pw_setup(uint32_t node_id,
 	const struct spa_pod *params[1];
 	params[0] = spa_format_video_raw_build(&b, SPA_PARAM_EnumFormat, &fmt);
 
-	int ret = pw_stream_connect( // static inline
+	int ret = g_pw.pw_stream_connect(
 			_pw_stream,
 			PW_DIRECTION_INPUT,
 			PW_ID_ANY,
@@ -768,7 +774,7 @@ bool PipeWireCaptureBackend::_pw_setup(uint32_t node_id,
 		_pw_events = nullptr;
 		delete _pw_listener;
 		_pw_listener = nullptr;
-		pw_core_disconnect(_pw_core); // inline
+		g_pw.pw_core_disconnect(_pw_core);
 		_pw_core = nullptr;
 		g_pw.pw_context_destroy(_pw_context);
 		_pw_context = nullptr;
@@ -790,7 +796,7 @@ void PipeWireCaptureBackend::_pw_thread_func() {
 
 	// Teardown — runs on the PW thread after quit.
 	if (_pw_stream) {
-		pw_stream_disconnect(_pw_stream); // static inline
+		g_pw.pw_stream_disconnect(_pw_stream);
 		g_pw.pw_stream_destroy(_pw_stream);
 		_pw_stream = nullptr;
 	}
@@ -800,7 +806,7 @@ void PipeWireCaptureBackend::_pw_thread_func() {
 	_pw_listener = nullptr;
 
 	if (_pw_core) {
-		pw_core_disconnect(_pw_core); // static inline
+		g_pw.pw_core_disconnect(_pw_core);
 		_pw_core = nullptr;
 	}
 	if (_pw_context) {
