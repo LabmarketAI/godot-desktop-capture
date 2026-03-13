@@ -73,6 +73,10 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 }
 Write-Ok (git --version)
 
+Write-Step "Initialising repository submodules"
+git submodule update --init --recursive
+Write-Ok "Repository submodules initialised"
+
 # ---------------------------------------------------------------------------
 # 2. Python 3
 # ---------------------------------------------------------------------------
@@ -217,6 +221,36 @@ if (-not $chartsRoot) {
     Write-Host "    DLL is at: $dll" -ForegroundColor Cyan
 } else {
     Write-Ok "Found: $chartsRoot"
+
+    Write-Step "Initialising XR demo dependencies in godot-charts"
+
+    $chartsPath = $chartsRoot.Path
+    $xrToolsPath = Join-Path $chartsPath "demo\addons\godot-xr-tools"
+    $openxrVendorsPath = Join-Path $chartsPath "demo\addons\godot-openxr-vendors"
+
+    if (Test-Path $xrToolsPath) {
+        Write-Ok "XR Tools present: $xrToolsPath"
+    } else {
+        $xrToolsZip = Join-Path $chartsPath "demo\addons\godot-xr-tools.zip"
+        if (Test-Path $xrToolsZip) {
+            Write-Warn "XR Tools folder missing. Found zip at $xrToolsZip. Extract it to demo\\addons\\godot-xr-tools."
+        } else {
+            Write-Warn "XR Tools not found at demo\\addons\\godot-xr-tools. VR demo movement/interaction may be unavailable."
+        }
+    }
+
+    if (Test-Path (Join-Path $chartsPath ".gitmodules")) {
+        $hasOpenxrVendorsSubmodule = Select-String -Path (Join-Path $chartsPath ".gitmodules") -Pattern "demo/addons/godot-openxr-vendors" -Quiet
+        if ($hasOpenxrVendorsSubmodule) {
+            git -C $chartsPath submodule update --init --recursive demo/addons/godot-openxr-vendors
+        }
+    }
+
+    if (Test-Path $openxrVendorsPath) {
+        Write-Ok "OpenXR vendors present: $openxrVendorsPath"
+    } else {
+        Write-Warn "OpenXR vendors addon missing. Keyboard passthrough features will be unavailable."
+    }
 
     # Search the repo for an addons subfolder that hosts godot-desktop-capture.
     $binDirs = Get-ChildItem $chartsRoot -Recurse -Directory -ErrorAction SilentlyContinue |
