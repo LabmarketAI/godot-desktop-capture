@@ -61,6 +61,17 @@ private:
         int64_t _window_id = 0;
 	bool _capture_cursor = true;
 	int _max_fps = 60;
+	bool _diagnostics_enabled = false;
+
+	// Runtime diagnostics for VR judder investigations.
+	uint64_t _stats_total_frames = 0;
+	uint64_t _stats_interval_samples = 0;
+	uint64_t _stats_late_frame_count = 0;
+	double _stats_last_frame_time_s = 0.0;
+	double _stats_last_emit_time_s = 0.0;
+	double _stats_last_interval_ms = 0.0;
+	double _stats_avg_interval_ms = 0.0;
+	double _stats_max_interval_ms = 0.0;
 
 	// Platform backend (owned; null when no backend is active or on unsupported platform).
 #if defined(_WIN32) || defined(__linux__)
@@ -120,6 +131,10 @@ public:
 	/// Lower values reduce GPU load at the cost of display latency.
 	void set_max_fps(int p_fps);
 	int get_max_fps() const;
+	void set_diagnostics_enabled(bool p_enabled);
+	bool get_diagnostics_enabled() const;
+	Dictionary get_capture_stats() const;
+	void reset_capture_stats();
 
 	// --- Methods ---
 

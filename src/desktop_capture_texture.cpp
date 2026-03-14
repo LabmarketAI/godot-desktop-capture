@@ -2,6 +2,7 @@
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/method_bind.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 
@@ -42,12 +43,18 @@ void DesktopCaptureTexture::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_fps", PROPERTY_HINT_RANGE, "1,240,1"),
 			"set_max_fps", "get_max_fps");
 
+	ClassDB::bind_method(D_METHOD("set_diagnostics_enabled", "enabled"), &DesktopCaptureTexture::set_diagnostics_enabled);
+	ClassDB::bind_method(D_METHOD("get_diagnostics_enabled"), &DesktopCaptureTexture::get_diagnostics_enabled);
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "diagnostics_enabled"), "set_diagnostics_enabled", "get_diagnostics_enabled");
+
 	// --- Methods ---
 
        ClassDB::bind_method(D_METHOD("get_available_windows"), &DesktopCaptureTexture::get_available_windows);
 
 	ClassDB::bind_method(D_METHOD("get_monitor_count"), &DesktopCaptureTexture::get_monitor_count);
 	ClassDB::bind_method(D_METHOD("get_monitor_size", "index"), &DesktopCaptureTexture::get_monitor_size);
+	ClassDB::bind_method(D_METHOD("get_capture_stats"), &DesktopCaptureTexture::get_capture_stats);
+	ClassDB::bind_method(D_METHOD("reset_capture_stats"), &DesktopCaptureTexture::reset_capture_stats);
 
 	// Internal: deferred backend start (registered so call_deferred can invoke it).
 	ClassDB::bind_method(D_METHOD("_start_backend"), &DesktopCaptureTexture::_start_backend);
@@ -62,6 +69,7 @@ void DesktopCaptureTexture::_bind_methods() {
 
 	// Emitted after each new frame is written to the texture.
 	ADD_SIGNAL(MethodInfo("frame_updated"));
+	ADD_SIGNAL(MethodInfo("capture_stats_updated", PropertyInfo(Variant::DICTIONARY, "stats")));
 
 	// Emitted when the capture loop successfully initialises.
 	ADD_SIGNAL(MethodInfo("capture_started"));
@@ -83,6 +91,7 @@ DesktopCaptureTexture::DesktopCaptureTexture() {
 	// never changes, so materials assigned before capture starts keep working.
 	Ref<Image> placeholder = Image::create_empty(1, 1, false, Image::FORMAT_RGBA8);
 	_texture_rid = RenderingServer::get_singleton()->texture_2d_create(placeholder);
+	reset_capture_stats();
 }
 
 DesktopCaptureTexture::~DesktopCaptureTexture() {
@@ -143,6 +152,7 @@ void DesktopCaptureTexture::set_enabled(bool p_enabled) {
 	// the material taking ownership, causing the destructor (and stop()) to fire
 	// before any frames are captured.
 	_enabled = true;
+	reset_capture_stats();
 	call_deferred("_start_backend");
 }
 
@@ -318,6 +328,39 @@ int DesktopCaptureTexture::get_max_fps() const {
 	return _max_fps;
 }
 
+void DesktopCaptureTexture::set_diagnostics_enabled(bool p_enabled) {
+	_diagnostics_enabled = p_enabled;
+}
+
+bool DesktopCaptureTexture::get_diagnostics_enabled() const {
+	return _diagnostics_enabled;
+}
+
+Dictionary DesktopCaptureTexture::get_capture_stats() const {
+	Dictionary stats;
+	stats["total_frames"] = static_cast<int64_t>(_stats_total_frames);
+	stats["interval_samples"] = static_cast<int64_t>(_stats_interval_samples);
+	stats["late_frame_count"] = static_cast<int64_t>(_stats_late_frame_count);
+	stats["last_interval_ms"] = _stats_last_interval_ms;
+	stats["avg_interval_ms"] = _stats_avg_interval_ms;
+	stats["max_interval_ms"] = _stats_max_interval_ms;
+	stats["estimated_capture_fps"] = _stats_avg_interval_ms > 0.0 ? (1000.0 / _stats_avg_interval_ms) : 0.0;
+	stats["target_max_fps"] = _max_fps;
+	stats["diagnostics_enabled"] = _diagnostics_enabled;
+	return stats;
+}
+
+void DesktopCaptureTexture::reset_capture_stats() {
+	_stats_total_frames = 0;
+	_stats_interval_samples = 0;
+	_stats_late_frame_count = 0;
+	_stats_last_frame_time_s = 0.0;
+	_stats_last_emit_time_s = 0.0;
+	_stats_last_interval_ms = 0.0;
+	_stats_avg_interval_ms = 0.0;
+	_stats_max_interval_ms = 0.0;
+}
+
 // --- Methods ---
 
 int DesktopCaptureTexture::get_monitor_count() const {
@@ -367,6 +410,29 @@ void DesktopCaptureTexture::_push_frame_deferred(const Ref<Image> &p_image) {
 		_height = p_height;
 	} else {
 		RenderingServer::get_singleton()->texture_2d_update(_texture_rid, p_image, 0);
+	}
+
+	const double now_s = static_cast<double>(Time::get_singleton()->get_ticks_usec()) / 1000000.0;
+	_stats_total_frames += 1;
+	if (_stats_last_frame_time_s > 0.0) {
+		const double interval_ms = (now_s - _stats_last_frame_time_s) * 1000.0;
+		_stats_last_interval_ms = interval_ms;
+		_stats_interval_samples += 1;
+		_stats_avg_interval_ms += (interval_ms - _stats_avg_interval_ms) / static_cast<double>(_stats_interval_samples);
+		if (interval_ms > _stats_max_interval_ms) {
+			_stats_max_interval_ms = interval_ms;
+		}
+
+		const double target_interval_ms = 1000.0 / static_cast<double>(MAX(_max_fps, 1));
+		if (interval_ms > target_interval_ms * 1.5) {
+			_stats_late_frame_count += 1;
+		}
+	}
+	_stats_last_frame_time_s = now_s;
+
+	if (_diagnostics_enabled && (_stats_last_emit_time_s <= 0.0 || (now_s - _stats_last_emit_time_s) >= 1.0)) {
+		_stats_last_emit_time_s = now_s;
+		emit_signal("capture_stats_updated", get_capture_stats());
 	}
 
 	emit_changed(); // invalidates materials that hold this texture

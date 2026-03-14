@@ -118,6 +118,10 @@ func _ready() -> void:
     set_surface_override_material(0, mat)
 
     capture.capture_stopped.connect(_on_capture_stopped)
+    capture.capture_stats_updated.connect(func(stats: Dictionary) -> void:
+        print("capture fps=", stats.get("estimated_capture_fps", 0.0), " late=", stats.get("late_frame_count", 0))
+    )
+    capture.diagnostics_enabled = true
     capture.enabled = true
 
 func _on_capture_stopped(reason: String) -> void:
@@ -165,6 +169,7 @@ capture.capture_stopped.connect(func(reason: String) -> void:
 | `monitor_index` | `int` | `0` | Zero-based index of the monitor to capture |
 | `capture_cursor` | `bool` | `true` | Composite the OS mouse cursor onto each frame |
 | `max_fps` | `int` | `60` | Capture rate cap (1–240 fps) |
+| `diagnostics_enabled` | `bool` | `false` | Emit once-per-second `capture_stats_updated` snapshots |
 
 `enabled` is always truthful: if `set enabled = true` but the backend fails to start, `enabled` reverts to `false` and `capture_stopped(reason)` is emitted.
 
@@ -174,6 +179,8 @@ capture.capture_stopped.connect(func(reason: String) -> void:
 |-----------|-------------|
 | `get_monitor_count() -> int` | Number of monitors detected by the platform backend |
 | `get_monitor_size(index: int) -> Vector2i` | Pixel dimensions of the monitor at `index` |
+| `get_capture_stats() -> Dictionary` | Returns runtime capture diagnostics (frame intervals, estimated fps, late-frame count) |
+| `reset_capture_stats() -> void` | Clears diagnostics counters for a fresh measurement window |
 
 ### Signals
 
@@ -182,6 +189,7 @@ capture.capture_stopped.connect(func(reason: String) -> void:
 | `capture_started` | Emitted once the backend initialises successfully |
 | `capture_stopped(reason: String)` | Emitted when capture stops for any reason |
 | `frame_updated` | Emitted after each new frame is written to the texture |
+| `capture_stats_updated(stats: Dictionary)` | Emitted once per second when `diagnostics_enabled = true` |
 
 ### `capture_stopped` reason values
 
