@@ -298,9 +298,16 @@ int64_t DesktopCaptureTexture::get_window_id() const {
 Array DesktopCaptureTexture::get_available_windows() const {
 	Array result;
 #ifdef _WIN32
-	WGCCaptureBackend::enumerate_windows([&result](int64_t hwnd, const std::string& title) {
+	WGCCaptureBackend::enumerate_windows([&result](int64_t hwnd, const std::string &title) {
 		Dictionary dict;
 		dict["id"] = hwnd;
+		dict["title"] = String::utf8(title.c_str());
+		result.push_back(dict);
+	});
+#elif defined(__linux__)
+	PipeWireCaptureBackend::enumerate_windows([&result](int64_t id, const std::string &title) {
+		Dictionary dict;
+		dict["id"] = id;
 		dict["title"] = String::utf8(title.c_str());
 		result.push_back(dict);
 	});

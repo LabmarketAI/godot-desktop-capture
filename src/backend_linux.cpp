@@ -163,6 +163,73 @@ struct DynPW {
 	}
 };
 
+// ---- X11 (optional — window enumeration on X11/XWayland) ----
+// Minimal type definitions so we don't need libx11-dev at build time.
+// All symbols are loaded at runtime via dlopen("libX11.so.6").
+typedef unsigned long X11Window;
+typedef unsigned long X11Atom;
+
+#define X11_FALSE             0
+#define X11_SUCCESS           0
+#define X11_ANY_PROPERTY_TYPE 0L
+
+// XGetWindowProperty has too many output-pointer args for the X macro pattern.
+using XGetWindowProperty_fn = int (*)(
+		void *,          // Display*
+		X11Window,       // window
+		X11Atom,         // property
+		long,            // long_offset
+		long,            // long_length
+		int,             // delete
+		X11Atom,         // req_type
+		X11Atom *,       // actual_type_return
+		int *,           // actual_format_return
+		unsigned long *, // nitems_return
+		unsigned long *, // bytes_after_return
+		unsigned char ** // prop_return
+);
+
+#define X11_FUNCS(X) \
+	X(void *,    XOpenDisplay,  (const char *)) \
+	X(int,       XCloseDisplay, (void *)) \
+	X(X11Window, XRootWindow,   (void *, int)) \
+	X(X11Atom,   XInternAtom,   (void *, const char *, int)) \
+	X(int,       XFree,         (void *))
+
+struct DynX11 {
+	void *handle = nullptr;
+#define FIELD(ret, name, args) ret(*name) args = nullptr;
+	X11_FUNCS(FIELD)
+#undef FIELD
+	XGetWindowProperty_fn XGetWindowProperty = nullptr;
+
+	bool load() {
+		handle = dlopen("libX11.so.6", RTLD_LAZY | RTLD_LOCAL);
+		if (!handle)
+			return false;
+#define RESOLVE(ret, name, args) \
+	name = reinterpret_cast<ret(*) args>(dlsym(handle, #name)); \
+	if (!name) { dlclose(handle); handle = nullptr; return false; }
+		X11_FUNCS(RESOLVE)
+#undef RESOLVE
+		XGetWindowProperty = reinterpret_cast<XGetWindowProperty_fn>(
+				dlsym(handle, "XGetWindowProperty"));
+		if (!XGetWindowProperty) {
+			dlclose(handle);
+			handle = nullptr;
+			return false;
+		}
+		return true;
+	}
+
+	void unload() {
+		if (handle) {
+			dlclose(handle);
+			handle = nullptr;
+		}
+	}
+};
+
 // Process-level singletons — loaded once, ref-counted.
 static DynDbus g_dbus;
 static DynPW g_pw;
@@ -931,6 +998,96 @@ bool PipeWireCaptureBackend::get_monitor_size(int /*index*/,
 	// active session.  Return (0, 0) — callers should check for this.
 	out_w = out_h = 0;
 	return false;
+}
+
+void PipeWireCaptureBackend::enumerate_windows(
+		std::function<void(int64_t, const std::string &)> callback) {
+	DynX11 x11;
+	if (!x11.load())
+		return; // libX11 not available (pure Wayland, etc.) — return empty silently.
+
+	void *dpy = x11.XOpenDisplay(nullptr);
+	if (!dpy) {
+		x11.unload();
+		return;
+	}
+
+	X11Window root = x11.XRootWindow(dpy, 0);
+	X11Atom net_client_list = x11.XInternAtom(dpy, "_NET_CLIENT_LIST", X11_FALSE);
+	X11Atom net_wm_name = x11.XInternAtom(dpy, "_NET_WM_NAME", X11_FALSE);
+	X11Atom utf8_string = x11.XInternAtom(dpy, "UTF8_STRING", X11_FALSE);
+	X11Atom wm_name = x11.XInternAtom(dpy, "WM_NAME", X11_FALSE);
+
+	// Fetch the EWMH window list from the root property.
+	X11Atom actual_type;
+	int actual_format;
+	unsigned long n_items, bytes_after;
+	unsigned char *list_data = nullptr;
+
+	int rc = x11.XGetWindowProperty(
+			dpy, root, net_client_list,
+			0L, 65536L, X11_FALSE, X11_ANY_PROPERTY_TYPE,
+			&actual_type, &actual_format,
+			&n_items, &bytes_after, &list_data);
+
+	if (rc != X11_SUCCESS || actual_format != 32 || !list_data || n_items == 0) {
+		// _NET_CLIENT_LIST unavailable — WM may not support EWMH or is pure Wayland.
+		if (list_data)
+			x11.XFree(list_data);
+		x11.XCloseDisplay(dpy);
+		x11.unload();
+		return;
+	}
+
+	// On 64-bit Linux, format=32 items are stored as unsigned long (8 bytes each).
+	const auto *windows = reinterpret_cast<const X11Window *>(list_data);
+	for (unsigned long i = 0; i < n_items; ++i) {
+		X11Window win = windows[i];
+
+		// Prefer _NET_WM_NAME (guaranteed UTF-8).
+		std::string title;
+		{
+			X11Atom t_type;
+			int t_fmt;
+			unsigned long t_n, t_after;
+			unsigned char *t_data = nullptr;
+			rc = x11.XGetWindowProperty(
+					dpy, win, net_wm_name,
+					0L, 512L, X11_FALSE, utf8_string,
+					&t_type, &t_fmt, &t_n, &t_after, &t_data);
+			if (rc == X11_SUCCESS && t_data && t_n > 0)
+				title.assign(reinterpret_cast<const char *>(t_data), t_n);
+			if (t_data)
+				x11.XFree(t_data);
+		}
+
+		// Fallback: WM_NAME (Latin-1 / unspecified encoding).
+		if (title.empty()) {
+			X11Atom t_type;
+			int t_fmt;
+			unsigned long t_n, t_after;
+			unsigned char *t_data = nullptr;
+			rc = x11.XGetWindowProperty(
+					dpy, win, wm_name,
+					0L, 512L, X11_FALSE, X11_ANY_PROPERTY_TYPE,
+					&t_type, &t_fmt, &t_n, &t_after, &t_data);
+			if (rc == X11_SUCCESS && t_data && t_n > 0)
+				title.assign(reinterpret_cast<const char *>(t_data), t_n);
+			if (t_data)
+				x11.XFree(t_data);
+		}
+
+		if (title.empty())
+			continue;
+		if (title.find("Godot") != std::string::npos)
+			continue;
+
+		callback(static_cast<int64_t>(win), title);
+	}
+
+	x11.XFree(list_data);
+	x11.XCloseDisplay(dpy);
+	x11.unload();
 }
 
 #endif // __linux__

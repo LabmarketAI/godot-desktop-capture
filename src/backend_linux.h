@@ -73,6 +73,10 @@ public:
 	// get_monitor_size returns false on Linux — portal does not expose monitor
 	// dimensions without an active session.
 	static bool get_monitor_size(int index, int32_t &out_w, int32_t &out_h);
+	// enumerate_windows invokes callback(window_id, title) for each top-level
+	// window visible to the X11/XWayland session, excluding the Godot editor.
+	// Returns silently with no callbacks when libX11 is unavailable (pure Wayland).
+	static void enumerate_windows(std::function<void(int64_t, const std::string &)> callback);
 
 private:
 	// Run the xdg-desktop-portal ScreenCast flow and retrieve the PipeWire
